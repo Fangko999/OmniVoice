@@ -1,0 +1,7 @@
+accounts.json
+state/
+uploads/
+outputs/
+scripts/
+__pycache__/
+*.tmp

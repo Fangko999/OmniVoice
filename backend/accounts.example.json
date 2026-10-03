@@ -1,0 +1,26 @@
+{
+  "settings": {
+    "min_delay": 1.0,
+    "max_delay": 2.5,
+    "exhausted_hours": 6,
+    "cooldown_minutes": 10
+  },
+  "accounts": [
+    {
+      "name": "acc1",
+      "secure_1psid": "DÁN __Secure-1PSID CỦA TÀI KHOẢN 1",
+      "secure_1psidts": "DÁN __Secure-1PSIDTS CỦA TÀI KHOẢN 1",
+      "enabled": true,
+      "daily_limit": null,
+      "proxy": null
+    },
+    {
+      "name": "acc2",
+      "secure_1psid": "DÁN __Secure-1PSID CỦA TÀI KHOẢN 2",
+      "secure_1psidts": "DÁN __Secure-1PSIDTS CỦA TÀI KHOẢN 2",
+      "enabled": true,
+      "daily_limit": null,
+      "proxy": null
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+# --- Bí mật: cookie tài khoản Gemini ---
+backend/accounts.json
+
+# --- Dữ liệu chạy (sinh ra khi dùng) ---
+backend/state/
+backend/uploads/
+backend/outputs/
+backend/scripts/
+uploads/
+outputs/
+scripts/
+
+# --- Phụ thuộc lớn / repo riêng ---
+Kokoro-Vietnamese/
+*.epub
+
+# --- Python ---
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# --- Node ---
+frontend/node_modules/
+frontend/dist/
+
+# --- Khác ---
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
