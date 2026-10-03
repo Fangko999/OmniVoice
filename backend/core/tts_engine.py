@@ -6,10 +6,11 @@ import threading
 import torch
 from concurrent.futures import ThreadPoolExecutor
 
-# Thêm đường dẫn tới Kokoro-Vietnamese nếu chưa được cài qua pip
+# Luôn ưu tiên Kokoro-Vietnamese nằm trong thư mục dự án (kể cả khi máy có bản `pip install -e`
+# trỏ tới đường dẫn cũ) -> chuyển cả thư mục dự án đi nơi khác vẫn chạy.
 kokoro_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../Kokoro-Vietnamese/src'))
-if kokoro_path not in sys.path:
-    sys.path.append(kokoro_path)
+if os.path.isdir(kokoro_path) and kokoro_path not in sys.path:
+    sys.path.insert(0, kokoro_path)
 
 from kokoro_vietnamese import KokoroVietnamese
 import kokoro_vietnamese.core

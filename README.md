@@ -2,6 +2,8 @@
 
 Chuyển truyện EPUB thành audio tiếng Việt bằng Kokoro TTS, có tùy chọn AI (Gemini) phân vai và đạo diễn âm thanh.
 
+> Tài liệu đầy đủ (kiến trúc, định dạng dữ liệu, cách chuyển máy, các lưu ý): **[PROJECT_CONTEXT.md](PROJECT_CONTEXT.md)**.
+
 ## 3 tab
 
 | Tab | Chức năng |
