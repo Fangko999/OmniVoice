@@ -141,7 +141,7 @@ class AccountPool:
                 f"Không tìm thấy {os.path.abspath(self.accounts_path)}. "
                 "Hãy tạo file này từ accounts.example.json."
             )
-        with open(self.accounts_path, "r", encoding="utf-8") as f:
+        with open(self.accounts_path, "r", encoding="utf-8-sig") as f:  # -sig: Notepad có thể thêm BOM
             data = json.load(f)
         if isinstance(data, list):
             data = {"accounts": data}
@@ -184,7 +184,7 @@ class AccountPool:
     def _read_usage(self) -> dict:
         if os.path.exists(self.usage_path):
             try:
-                with open(self.usage_path, "r", encoding="utf-8") as f:
+                with open(self.usage_path, "r", encoding="utf-8-sig") as f:
                     return json.load(f)
             except Exception:
                 return {}

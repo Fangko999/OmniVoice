@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict
 
 from fastapi import APIRouter, HTTPException, WebSocket
@@ -14,8 +15,8 @@ def _channel(book_id: str) -> str:
     return f"director:{book_id}"
 
 
-def _get_job(book_id: str) -> DirectorJob:
-    return active_jobs.get(book_id) or DirectorJob(book_id)
+async def _get_job(book_id: str) -> DirectorJob:
+    return active_jobs.get(book_id) or await asyncio.to_thread(DirectorJob, book_id)
 
 
 @router.post("/start")
@@ -26,12 +27,18 @@ async def start_director(config: DirectorConfigRequest):
     if not config.script_dir.strip():
         raise HTTPException(status_code=400, detail="Chưa chọn thư mục lưu kịch bản")
     try:
-        job = DirectorJob(config.book_id)
+        job = await asyncio.to_thread(DirectorJob, config.book_id)
         job.state.config = config
-        job.prepare()
+        await asyncio.to_thread(job.prepare)
+        cur = active_jobs.get(config.book_id)
+        if cur and cur.state.status == "running":  # có request Start khác chạy xen vào lúc đang parse
+            raise HTTPException(status_code=409, detail="Sách này đang được AI xử lý")
+        job.state.status = "running"
         active_jobs[config.book_id] = job
         spawn(job.run(callback=hub.callback_for(_channel(config.book_id))))
         return {"message": "Đã bắt đầu AI đạo diễn", "skipped": job.state.completed_chapters}
+    except HTTPException:
+        raise
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -49,7 +56,7 @@ async def stop_director(book_id: str):
 @router.get("/{book_id}/state", response_model=DirectorState)
 async def director_state(book_id: str):
     try:
-        return _get_job(book_id).state
+        return (await _get_job(book_id)).state
     except Exception:
         raise HTTPException(status_code=404, detail="Không tìm thấy sách")
 
@@ -57,7 +64,7 @@ async def director_state(book_id: str):
 @router.websocket("/{book_id}/ws")
 async def director_ws(websocket: WebSocket, book_id: str):
     try:
-        initial = _get_job(book_id).state.model_dump_json()
+        initial = (await _get_job(book_id)).state.model_dump_json()
     except Exception:
         initial = None
     await hub.serve(websocket, _channel(book_id), initial)

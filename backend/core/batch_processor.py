@@ -3,11 +3,10 @@ import asyncio
 import os
 
 from models.schemas import BatchState
-from core.job_base import JobBase
+from core.job_base import JobBase, safe_dirname
 from core.epub_parser import EPUBParser
 from core.text_processor import TextProcessor
 from core.tts_engine import TTSEngine
-from core.audio_encoder import AudioEncoder
 
 
 def estimate_avg_chars(parser: EPUBParser, chapters) -> int:
@@ -32,7 +31,7 @@ def resolve_book_name(parser: EPUBParser, book_name: str = "") -> str:
 
 
 def output_root(output_dir: str, book_name: str) -> str:
-    return os.path.join(output_dir, book_name) if output_dir else os.path.join("outputs", book_name)
+    return os.path.join(output_dir or "outputs", safe_dirname(book_name))
 
 
 class FastJob(JobBase):
@@ -83,13 +82,23 @@ class FastJob(JobBase):
         self.log(f"Tốc độ: {c.speed}x | Khoảng nghỉ: {c.gap_seconds}s | Định dạng: {c.format}")
         self.log(f"Thư mục lưu: {output_root(c.output_dir, self.book_name)}")
 
+    def prepare(self):
+        """Gọi trước run(): chương đã xong = chương đã có file audio trong thư mục lưu hiện tại."""
+        cfg = self.state.config
+        root = output_root(cfg.output_dir, self.book_name)
+        self.state.completed_chapters = [
+            n for n in range(1, self.state.total_chapters + 1)
+            if os.path.isfile(os.path.join(root, f"chuong_{n:04d}.{cfg.format}"))
+        ]
+        self.save_state()
+
     async def setup(self):
         config = self.state.config
         if not config:
             raise ValueError("No config set in state")
         if not self.parser:
-            self.parser = EPUBParser(self.epub_path)
-        self._chapters = self.parser.get_chapters()
+            self.parser = await asyncio.to_thread(EPUBParser, self.epub_path)
+        self._chapters = await asyncio.to_thread(self.parser.get_chapters)
         if not self.tts:
             self.tts = TTSEngine(
                 narrator_voice=config.narrator_voice,
@@ -116,24 +125,14 @@ class FastJob(JobBase):
     async def process_chapter(self, chapter_num: int, callback):
         cfg = self.state.config
         paragraphs = self.parser.get_chapter_paragraphs(self._chapters[chapter_num - 1])
-        if not paragraphs:
-            return
         segments = self.build_segments(paragraphs)
+        if not segments:
+            self.log(f"  Chương {chapter_num}: không có nội dung, bỏ qua")
+            return
 
         await self._emit(callback, f"Chương {chapter_num}: Đang tổng hợp âm thanh Kokoro...")
-        audio = await asyncio.to_thread(self.tts.synthesize_chapter, segments, cfg.gap_seconds)
-        if len(audio) == 0:
-            return
-
-        out_dir = output_root(cfg.output_dir, self.book_name)
-        os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"chuong_{chapter_num:04d}.{cfg.format}")
-        await self._emit(callback, f"Chương {chapter_num}: Đang lưu file vào {out_path}...")
-
-        if cfg.format == "wav":
-            await asyncio.to_thread(AudioEncoder.save_wav, audio, out_path)
-        else:
-            await asyncio.to_thread(AudioEncoder.save_mp3, audio, out_path)
+        await self.render_chapter_audio(chapter_num, segments, cfg.gap_seconds, cfg.format,
+                                        output_root(cfg.output_dir, self.book_name), callback)
 
 
 # Tên cũ, giữ để tương thích

@@ -2,16 +2,12 @@ fastapi
 uvicorn[standard]
 python-multipart
 websockets
-aiofiles
 pydub
 ebooklib
 beautifulsoup4
 lxml
 soundfile
 numpy
-requests
-google-api-python-client
-google-auth-oauthlib
-google-auth-httplib2
 gemini_webapi
 pytest
+audioop-lts; python_version >= "3.13"

@@ -1,12 +1,10 @@
 """Tab Thu âm: thư mục kịch bản JSON + bảng gán 3 vai -> Kokoro -> MP3/WAV."""
-import asyncio
 import hashlib
 import os
 
 from models.schemas import RenderState, ROLES
 from core import script_store
-from core.audio_encoder import AudioEncoder
-from core.job_base import JobBase
+from core.job_base import JobBase, safe_dirname
 from core.tts_engine import TTSEngine
 
 
@@ -47,7 +45,7 @@ class RenderJob(JobBase):
         )
 
     def out_dir(self) -> str:
-        return os.path.join(self.state.config.output_dir, self.state.book_name)
+        return os.path.join(self.state.config.output_dir, safe_dirname(self.state.book_name))
 
     def log_dir(self):
         return os.path.join(self.out_dir(), "logs")
@@ -109,14 +107,4 @@ class RenderJob(JobBase):
             return
 
         await self._emit(callback, f"Chương {n}: Đang tổng hợp âm thanh ({len(segments)} đoạn)...")
-        audio = await asyncio.to_thread(self.tts.synthesize_chapter, segments, cfg.gap_seconds)
-        if len(audio) == 0:
-            return
-
-        os.makedirs(self.out_dir(), exist_ok=True)
-        out_path = os.path.join(self.out_dir(), f"chuong_{n:04d}.{cfg.format}")
-        await self._emit(callback, f"Chương {n}: Đang lưu file vào {out_path}...")
-        if cfg.format == "wav":
-            await asyncio.to_thread(AudioEncoder.save_wav, audio, out_path)
-        else:
-            await asyncio.to_thread(AudioEncoder.save_mp3, audio, out_path)
+        await self.render_chapter_audio(n, segments, cfg.gap_seconds, cfg.format, self.out_dir(), callback)

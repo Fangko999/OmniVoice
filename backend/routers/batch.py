@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException, WebSocket
 from typing import Dict
 from models.schemas import BatchConfigRequest, BatchState
@@ -20,13 +22,19 @@ async def start_batch(book_id: str, config: BatchConfigRequest):
     if existing and existing.state.status in ("running", "waiting"):
         raise HTTPException(status_code=409, detail="Sách này đang được xử lý")
     try:
-        processor = FastJob(book_id)
+        processor = await asyncio.to_thread(FastJob, book_id)
         processor.state.config = config
-        processor.save_state()
+        processor.prepare()
+        cur = active_batches.get(book_id)
+        if cur and cur.state.status in ("running", "waiting"):
+            raise HTTPException(status_code=409, detail="Sách này đang được xử lý")
+        processor.state.status = "running"
         active_batches[book_id] = processor
         # Chạy nền để không block API
         spawn(processor.run(callback=hub.callback_for(_channel(book_id))))
-        return {"message": "Đã bắt đầu xử lý", "status": "running"}
+        return {"message": "Đã bắt đầu xử lý", "status": "running", "skipped": processor.state.completed_chapters}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -44,7 +52,7 @@ async def get_state(book_id: str):
     if book_id in active_batches:
         return active_batches[book_id].state
     try:
-        return FastJob(book_id).state
+        return (await asyncio.to_thread(FastJob, book_id)).state
     except Exception:
         raise HTTPException(status_code=404, detail="Không tìm thấy trạng thái sách này")
 
@@ -52,7 +60,7 @@ async def get_state(book_id: str):
 @router.websocket("/{book_id}/ws")
 async def websocket_endpoint(websocket: WebSocket, book_id: str):
     try:
-        job = active_batches.get(book_id) or FastJob(book_id)
+        job = active_batches.get(book_id) or await asyncio.to_thread(FastJob, book_id)
         initial = job.state.model_dump_json()
     except Exception:
         initial = None

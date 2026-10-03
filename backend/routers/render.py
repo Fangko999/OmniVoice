@@ -25,8 +25,15 @@ def _load_state(job_id: str) -> RenderState | None:
         return job.state
     path = os.path.join(STATE_DIR, f"{job_id}.render.json")
     if os.path.isfile(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return RenderState(**json.load(f))
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                state = RenderState(**json.load(f))
+        except Exception:
+            return None
+        if state.status in ("running", "waiting"):  # không có trong bộ nhớ -> server đã tắt giữa chừng
+            state.status = "paused"
+            state.error_msg = "Bị gián đoạn (server đã tắt). Bấm 'Tiếp tục chạy' để chạy tiếp."
+        return state
     return None
 
 
@@ -47,6 +54,7 @@ async def start_render(config: RenderConfigRequest):
         job = RenderJob(config.script_dir)
         job.state.config = config
         job.prepare()
+        job.state.status = "running"  # để request Start thứ 2 (bấm đúp) bị chặn 409
         active_jobs[job_id] = job
         spawn(job.run(callback=hub.callback_for(_channel(job_id))))
         return StartResponse(job_id=job_id, skipped=job.state.completed_chapters)

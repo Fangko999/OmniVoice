@@ -16,10 +16,12 @@ const joinPath = (a, b) => (a ? a.replace(/[\\/]+$/, '') + '\\' + b : b);
 
 /** Tab AI Đạo Diễn: EPUB -> kịch bản JSON lưu trên ổ đĩa */
 export default function DirectorTab({ onEditorToggle, onSendToRender }) {
-  const [step, setStep] = useState(1);
-  const [book, setBook] = useState(null);
+  // Job đang theo dõi được nhớ qua localStorage -> F5 vẫn quay lại màn hình tiến trình
+  const [saved] = useState(() => store.get('director_job', null));
+  const [step, setStep] = useState(saved ? 3 : 1);
+  const [book, setBook] = useState(saved?.book || null);
   const [root, setRoot] = useState(store.get('script_root', ''));
-  const [scriptDir, setScriptDir] = useState('');
+  const [scriptDir, setScriptDir] = useState(saved?.scriptDir || '');
   const [range, setRange] = useState({ start: 1, end: 1 });
   const [overwrite, setOverwrite] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -31,8 +33,12 @@ export default function DirectorTab({ onEditorToggle, onSendToRender }) {
   }, [defaults]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (book) setScriptDir(joinPath(root, `${safeName(book.book_name)}_kichban`));
-  }, [root, book]);
+    if (book && step === 2) setScriptDir(joinPath(root, `${safeName(book.book_name)}_kichban`));
+  }, [root, book, step]);
+
+  useEffect(() => {
+    store.set('director_job', step === 3 && book ? { book, scriptDir } : null);
+  }, [step, book, scriptDir]);
 
   useEffect(() => { onEditorToggle?.(editing); }, [editing, onEditorToggle]);
 

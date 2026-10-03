@@ -18,8 +18,9 @@ function addRecent(dir) {
 
 /** Tab Thu Âm Kịch Bản: mở thư mục kịch bản bất kỳ -> gán giọng -> render */
 export default function RenderTab({ incomingDir, onEditorToggle }) {
-  const [step, setStep] = useState(1);
-  const [dirInput, setDirInput] = useState('');
+  const [saved] = useState(() => store.get('render_job', null)); // { jobId, scriptDir } của job đang theo dõi
+  const [step, setStep] = useState(saved ? 3 : 1);
+  const [dirInput, setDirInput] = useState(saved?.scriptDir || '');
   const [project, setProject] = useState(null); // { script_dir, manifest, available_chapters }
   const [opening, setOpening] = useState(false);
   const [voiceMap, setVoiceMap] = useState(store.get('voice_map', DEFAULT_MAP));
@@ -30,7 +31,7 @@ export default function RenderTab({ incomingDir, onEditorToggle }) {
     format: store.get('render_format', 'mp3'),
     output_dir: store.get('output_dir', '')
   });
-  const [jobId, setJobId] = useState(null);
+  const [jobId, setJobId] = useState(saved?.jobId || null);
   const [editing, setEditing] = useState(false);
   const [recent, setRecent] = useState(store.get('recent_scripts', []));
   const defaults = useDefaults();
@@ -41,6 +42,18 @@ export default function RenderTab({ incomingDir, onEditorToggle }) {
 
   useEffect(() => { onEditorToggle?.(editing); }, [editing, onEditorToggle]);
   useEffect(() => { store.set('voice_map', voiceMap); }, [voiceMap]);
+
+  useEffect(() => {
+    store.set('render_job', step === 3 && jobId && project ? { jobId, scriptDir: project.script_dir } : (step === 3 ? saved : null));
+  }, [step, jobId, project]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // F5 khi đang ở màn hình tiến trình: nạp lại thông tin kịch bản (không đổi màn hình)
+  useEffect(() => {
+    if (!saved?.scriptDir) return;
+    axios.post(`${API_BASE}/scripts/open`, { script_dir: saved.scriptDir })
+      .then(r => setProject(r.data))
+      .catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const open = async (dir) => {
     if (!dir) return;
@@ -201,7 +214,7 @@ export default function RenderTab({ incomingDir, onEditorToggle }) {
             startPath="/render/start"
             resetLabel="Kịch bản khác"
             onReset={() => { setProject(null); setStep(1); }}
-            doneActions={
+            doneActions={project &&
               <button className="cyber-btn" onClick={() => setStep(2)}><Settings2 size={18} /> Quay lại cấu hình</button>
             }
           />

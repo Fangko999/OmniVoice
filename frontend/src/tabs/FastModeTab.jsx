@@ -18,8 +18,9 @@ const stepAnim = {
 
 /** Chế độ Đọc Nhanh — giữ nguyên luồng 4 bước cũ */
 export default function FastModeTab() {
-  const [step, setStep] = useState(1);
-  const [bookData, setBookData] = useState(null); // { book_id, book_name, total_chapters }
+  const [saved] = useState(() => store.get('fast_job', null)); // sách đang theo dõi tiến trình (F5 không mất)
+  const [step, setStep] = useState(saved ? 4 : 1);
+  const [bookData, setBookData] = useState(saved); // { book_id, book_name, total_chapters }
   const [voiceConfig, setVoiceConfig] = useState({
     reading_mode: 'dual',
     narrator_voice: 'my_yen',
@@ -40,6 +41,10 @@ export default function FastModeTab() {
       setBatchConfig(prev => ({ ...prev, output_dir: defaults.output_dir }));
     }
   }, [defaults]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    store.set('fast_job', step === 4 && bookData ? bookData : null);
+  }, [step, bookData]);
 
   const handleUploadSuccess = (data) => {
     setBookData(data);

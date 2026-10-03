@@ -48,6 +48,42 @@ _VOICE_ENGINES: dict[tuple[str, str], KokoroVietnamese] = {}  # (device, voice) 
 # Một ThreadPool dùng chung để tránh tạo/hủy thread liên tục (rò rỉ RAM)
 _EXECUTOR = ThreadPoolExecutor(max_workers=3)
 
+# Kokoro ném lỗi nếu một câu > 510 âm vị (~370 ký tự tiếng Việt). Chia nhỏ trước cho an toàn.
+MAX_PHONEMES = 480
+LONG_SENTENCE_CHARS = 300   # câu ngắn hơn thì không cần đếm âm vị
+PIECE_CHARS = 250
+
+
+def _split_long(sentence: str) -> list[str]:
+    """Chia câu quá dài tại dấu phẩy/chấm phẩy/hai chấm; không có thì chia đôi theo từ."""
+    core = kokoro_vietnamese.core
+    if len(sentence) < LONG_SENTENCE_CHARS or len(core.phonemize(sentence)) <= MAX_PHONEMES:
+        return [sentence]
+    pieces, cur = [], ""
+    for part in re.split(r"(?<=[,;:])\s+", sentence):
+        if cur and len(cur) + len(part) + 1 > PIECE_CHARS:
+            pieces.append(cur)
+            cur = part
+        else:
+            cur = f"{cur} {part}".strip()
+    if cur:
+        pieces.append(cur)
+    if len(pieces) < 2:
+        words = sentence.split()
+        if len(words) < 2:
+            return [sentence]
+        mid = len(words) // 2
+        pieces = [" ".join(words[:mid]), " ".join(words[mid:])]
+    return [x for p in pieces for x in _split_long(p)]
+
+
+def safe_pieces(text: str) -> list[str]:
+    """Các đoạn đều dưới giới hạn âm vị của Kokoro; [text] nếu không có câu nào quá dài."""
+    sentences = kokoro_vietnamese.core.split_text(text)
+    if all(len(s) < LONG_SENTENCE_CHARS for s in sentences):
+        return [text]
+    return [p for s in sentences for p in _split_long(s)]
+
 
 def _load_voice_engine(device: str, voice_id: str) -> KokoroVietnamese:
     key = (device, voice_id)
@@ -102,35 +138,57 @@ class TTSEngine:
             self.device = "cpu"
             return _load_voice_engine("cpu", voice_id)
         
-    def synthesize_segment(self, segment: dict) -> np.ndarray:
-        voice = segment.get('voice') or self.narrator_voice
-        text = segment.get('text', '')
-        speed = float(segment.get('speed', 1.0))
-        
+    def _synthesize(self, segment: dict) -> np.ndarray:
+        """Tổng hợp 1 segment; ném lỗi nếu thất bại."""
+        text = (segment.get('text') or '').strip()
         if not text:
-            return np.array([])
-            
+            return np.array([], dtype=np.float32)
+        engine = self.get_voice_engine(segment.get('voice') or self.narrator_voice)
+        speed = float(segment.get('speed', 1.0))
+        pieces = safe_pieces(text)
+        if len(pieces) == 1:
+            return engine.synthesize(text, speed=speed)[0]
+        core = kokoro_vietnamese.core
+        chunks = [engine.synthesize(p, speed=speed)[0] for p in pieces]
+        return core.merge_audio_chunks(chunks, round(core.SAMPLE_RATE * core.DEFAULT_CROSSFADE_MS / 1000))
+
+    def synthesize_segment(self, segment: dict) -> np.ndarray:
+        """Dùng cho nghe thử: lỗi -> mảng rỗng."""
         try:
-            audio, _ = self.get_voice_engine(voice).synthesize(text, speed=speed)
-            return audio
+            return self._synthesize(segment)
         except Exception as e:
-            print(f"TTS Error on segment: {text} - {e}")
+            print(f"TTS Error on segment: {segment.get('text', '')} - {e}")
             return np.array([])
-            
-    def synthesize_chapter(self, segments: list[dict], gap_seconds: float = 0.4, sample_rate: int = 24000) -> np.ndarray:
-        """Ghép audio các segment. Mỗi segment có thể có 'pause_after' (giây) để ghi đè gap_seconds."""
+
+    def synthesize_chapter(self, segments: list[dict], gap_seconds: float = 0.4, sample_rate: int = 24000,
+                           failures: list | None = None) -> np.ndarray:
+        """Ghép audio các segment. Mỗi segment có thể có 'pause_after' (giây) để ghi đè gap_seconds.
+
+        Segment lỗi được thử lại 1 lần; vẫn lỗi thì bỏ qua và ghi (text, lỗi) vào `failures`
+        để job báo cho người dùng (trước đây bị nuốt im lặng -> mất câu trong audio).
+        """
+        def one(seg):
+            last = None
+            for _ in range(2):
+                try:
+                    return self._synthesize(seg)
+                except Exception as e:
+                    last = e
+            if failures is not None:
+                failures.append((seg.get('text', ''), f"{type(last).__name__}: {last}"))
+            return np.array([], dtype=np.float32)
+
         final_audio = []
-        
         # Dùng executor cố định để tránh tràn RAM
-        results = list(self._executor.map(self.synthesize_segment, segments))
-            
+        results = list(self._executor.map(one, segments))
+
         for seg, audio in zip(segments, results):
             if len(audio) > 0:
                 pause = seg.get('pause_after')
                 pause = gap_seconds if pause is None else float(pause)
                 final_audio.append(audio)
                 final_audio.append(np.zeros(int(sample_rate * pause), dtype=np.float32))
-                
+
         if final_audio:
             return np.concatenate(final_audio)
         return np.array([])

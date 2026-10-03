@@ -1,4 +1,5 @@
 import re
+import urllib.parse
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
@@ -54,6 +55,8 @@ class EPUBParser:
             if len(flat_toc) > 1:
                 seen_hrefs = set()
                 for item in flat_toc:
+                    if not getattr(item, "href", None):  # Section không có link
+                        continue
                     href = item.href.split('#')[0] # bỏ qua phần anchor nếu có
                     if href not in seen_hrefs:
                         seen_hrefs.add(href)
@@ -89,23 +92,42 @@ class EPUBParser:
         
         return chapters
         
+    def _find_item(self, href: str):
+        """Tìm file theo href của mục lục; chịu được href mã hóa URL hoặc tương đối khác thư mục."""
+        item = self.book.get_item_with_href(href)
+        if item:
+            return item
+        plain = urllib.parse.unquote(href)
+        item = self.book.get_item_with_href(plain)
+        if item:
+            return item
+        tail = plain.lstrip('./').split('/')[-1]
+        for it in self.book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            if it.get_name().split('/')[-1] == tail:
+                return it
+        return None
+
     def get_chapter_paragraphs(self, chapter: Chapter) -> list[str]:
         """Trả về danh sách đoạn văn sạch của 1 chương"""
         if chapter.item_id:
             item = self.book.get_item_with_id(chapter.item_id)
         else:
-            item = self.book.get_item_with_href(chapter.href)
+            item = self._find_item(chapter.href)
             
         if not item:
             return []
             
         soup = BeautifulSoup(item.get_content(), 'html.parser')
+        for br in soup.find_all('br'):
+            br.replace_with(' ')
         
         paragraphs = soup.find_all('p')
         if not paragraphs:
             text = soup.get_text(separator='\n')
             paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
         else:
-            paragraphs = [p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)]
+            # Không dùng get_text(strip=True): nó dính chữ khi đoạn có thẻ inline ("Hắn <i>nói</i>" -> "Hắnnói")
+            texts = (' '.join(p.get_text().split()) for p in paragraphs)
+            paragraphs = [t for t in texts if t]
             
         return paragraphs

@@ -34,14 +34,14 @@ def is_valid_script_dir(script_dir: str) -> bool:
     if not os.path.isfile(p):
         return False
     try:
-        with open(p, "r", encoding="utf-8") as f:
+        with open(p, "r", encoding="utf-8-sig") as f:
             return json.load(f).get("format") == "omnivoice-script"
     except Exception:
         return False
 
 
 def load_manifest(script_dir: str) -> ScriptManifest:
-    with open(os.path.join(script_dir, MANIFEST), "r", encoding="utf-8") as f:
+    with open(os.path.join(script_dir, MANIFEST), "r", encoding="utf-8-sig") as f:
         return ScriptManifest(**json.load(f))
 
 
@@ -69,8 +69,17 @@ def load_chapter(script_dir: str, n: int) -> Optional[ChapterScript]:
     p = chapter_path(script_dir, n)
     if not os.path.isfile(p):
         return None
-    with open(p, "r", encoding="utf-8") as f:
+    with open(p, "r", encoding="utf-8-sig") as f:  # -sig: file sửa bằng Notepad có thể có BOM
         return ChapterScript(**json.load(f))
+
+
+def is_edited(script_dir: str, n: int) -> bool:
+    """Chương đã được người dùng sửa tay trên đĩa (AI không được ghi đè)."""
+    try:
+        ch = load_chapter(script_dir, n)
+    except Exception:
+        return False
+    return bool(ch and ch.edited)
 
 
 def save_chapter(script_dir: str, script: ChapterScript, *, user_edit: bool = False,

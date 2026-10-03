@@ -5,6 +5,8 @@ import { formatTime } from '../utils';
 
 import { API_BASE, WS_BASE } from '../constants';
 
+const MAX_LOGS = 300; // chạy hàng nghìn chương -> giới hạn số dòng để trình duyệt không chậm dần
+
 export default function ProgressDashboard({
   bookId,
   onReset,
@@ -91,7 +93,8 @@ export default function ProgressDashboard({
               if (prev.length > 0 && prev[prev.length - 1].msg === data.current_log) {
                 return prev;
               }
-              return [...prev, { time: new Date().toLocaleTimeString(), msg: data.current_log }];
+              const next = [...prev, { time: new Date().toLocaleTimeString(), msg: data.current_log }];
+              return next.length > MAX_LOGS ? next.slice(-MAX_LOGS) : next;
             });
           }
         } catch (e) {
@@ -139,6 +142,11 @@ export default function ProgressDashboard({
       <div className="glass-panel flex-center cyber-panel" style={{ padding: '80px', flexDirection: 'column' }}>
         <RefreshCw className="animate-spin-slow" size={64} color="var(--primary)" style={{ marginBottom: '24px' }} />
         <h3 style={{ color: 'var(--text-muted)' }}>Đang thiết lập liên kết hệ thống...</h3>
+        {onReset && (
+          <button className="btn" style={{ marginTop: 24 }} onClick={onReset}>
+            <RefreshCw size={16} /> {resetLabel}
+          </button>
+        )}
       </div>
     );
   }
@@ -182,7 +190,7 @@ export default function ProgressDashboard({
             </button>
           )}
           {isDone && doneActions}
-          {isDone && onReset && (
+          {!isRunning && onReset && (
             <button className="cyber-btn btn-primary" onClick={onReset}>
               <RefreshCw size={18} /> {resetLabel}
             </button>

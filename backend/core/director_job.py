@@ -86,6 +86,9 @@ class DirectorJob(JobBase):
 
     async def process_chapter(self, n: int, callback):
         cfg = self.state.config
+        if script_store.is_edited(cfg.script_dir, n):
+            self.log(f"  Chương {n}: đã sửa tay -> giữ nguyên, bỏ qua AI")
+            return
         chapter = self._chapters[n - 1]
         paragraphs = self.parser.get_chapter_paragraphs(chapter)
 
@@ -107,6 +110,9 @@ class DirectorJob(JobBase):
             created_at=datetime.now().isoformat(timespec="seconds"),
             segments=[ScriptSegment(**s) for s in segments],
         )
+        if script_store.is_edited(cfg.script_dir, n):  # người dùng sửa tay trong lúc AI đang chạy
+            self.log(f"  Chương {n}: đã được sửa tay trong lúc AI chạy -> không ghi đè")
+            return
         script_store.save_chapter(cfg.script_dir, script, fallback_chunks=fallbacks)
         if fallbacks:
             self.log(f"  Chương {n}: {fallbacks} khúc dùng fallback (nên kiểm tra lại)")

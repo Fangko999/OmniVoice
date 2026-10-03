@@ -38,7 +38,7 @@ export default function FileUploader({ onUploadSuccess }) {
   };
 
   const checkFile = (selectedFile) => {
-    if (!selectedFile.name.endsWith('.epub')) {
+    if (!selectedFile.name.toLowerCase().endsWith('.epub')) {
       setError('Vui lòng chọn file định dạng .epub');
       setFile(null);
       return;

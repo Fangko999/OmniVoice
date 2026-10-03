@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime
 from typing import Awaitable, Callable, Optional
@@ -21,6 +22,13 @@ STATE_DIR = "state"
 
 # Chỉ cho phép một job dùng Kokoro tại một thời điểm (tránh tràn VRAM)
 TTS_LOCK = asyncio.Lock()
+
+
+def safe_dirname(name: str) -> str:
+    """Tên truyện -> tên thư mục hợp lệ trên Windows (bỏ < > : " / \\ | ? * và dấu chấm/khoảng trắng cuối)."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", name or "")
+    name = re.sub(r"\s+", " ", name).strip().rstrip(". ")
+    return name or "Truyen"
 
 
 class JobStopped(Exception):
@@ -51,8 +59,17 @@ class JobBase:
     def _load_or_init_state(self):
         for path in (self.state_path, self._legacy_state_path()):
             if path and os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    return self._state_cls()(**json.load(f))
+                try:
+                    with open(path, "r", encoding="utf-8-sig") as f:
+                        state = self._state_cls()(**json.load(f))
+                except Exception as e:
+                    print(f"File trạng thái hỏng, tạo mới: {path} ({e})")
+                    break
+                # Job object mới tạo từ đĩa nhưng file ghi 'running' -> server đã tắt giữa chừng
+                if state.status in ("running", "waiting"):
+                    state.status = "paused"
+                    state.error_msg = "Bị gián đoạn (server đã tắt). Bấm 'Tiếp tục chạy' để chạy tiếp."
+                return state
         state = self._new_state()
         self.save_state(state)
         return state
@@ -81,7 +98,7 @@ class JobBase:
 
         logger = logging.getLogger(f"omnivoice.{self.kind}.{self.job_id}")
         logger.setLevel(logging.DEBUG)
-        logger.handlers.clear()
+        self._close_logger(logger)
         fh = logging.FileHandler(log_file, encoding="utf-8")
         fh.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
         logger.addHandler(fh)
@@ -98,6 +115,17 @@ class JobBase:
     def log(self, msg: str, level: int = logging.INFO):
         if self._logger:
             self._logger.log(level, msg)
+
+    @staticmethod
+    def _close_logger(logger: Optional[logging.Logger]):
+        if not logger:
+            return
+        for h in list(logger.handlers):
+            logger.removeHandler(h)
+            try:
+                h.close()
+            except Exception:
+                pass
 
     # ---------------------------------------------------------------- control
     def stop(self):
@@ -125,8 +153,29 @@ class JobBase:
         if callback:
             await callback(self.state)
 
+    async def render_chapter_audio(self, n: int, segments: list[dict], gap: float, fmt: str,
+                                   out_dir: str, callback):
+        """Kokoro -> file audio cho job dùng TTS (cần self.tts). Báo đoạn lỗi thay vì bỏ qua im lặng."""
+        from core.audio_encoder import AudioEncoder
+
+        failures: list = []
+        audio = await asyncio.to_thread(self.tts.synthesize_chapter, segments, gap, 24000, failures)
+        for text, err in failures:
+            self.log(f"  ⚠ Chương {n}: bỏ qua 1 đoạn lỗi TTS ({err}): {text[:150]}", logging.WARNING)
+        if len(audio) == 0:
+            detail = f" ({failures[0][1]})" if failures else ""
+            raise RuntimeError(f"Không tạo được audio cho chương {n}{detail}")
+        if failures:
+            await self._emit(callback, f"Chương {n}: {len(failures)} đoạn lỗi TTS đã bị bỏ qua (xem file log)")
+
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f"chuong_{n:04d}.{fmt}")
+        await self._emit(callback, f"Chương {n}: Đang lưu file vào {out_path}...")
+        save = AudioEncoder.save_wav if fmt == "wav" else AudioEncoder.save_mp3
+        await asyncio.to_thread(save, audio, out_path)
+
     async def run(self, callback: Callable[[object], Awaitable[None]] = None):
-        self._stop_flag = False
+        # Không reset _stop_flag: mỗi lần Start tạo job mới; Dừng trước khi task kịp chạy vẫn phải có hiệu lực
         if self.uses_gpu:
             if TTS_LOCK.locked():
                 self.state.status = "waiting"
@@ -198,3 +247,5 @@ class JobBase:
                 await self.teardown()
             except Exception:
                 pass
+            self._close_logger(self._logger)
+            self._logger = None

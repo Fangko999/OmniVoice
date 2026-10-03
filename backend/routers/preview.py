@@ -1,3 +1,4 @@
+import asyncio
 import io
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -32,7 +33,7 @@ async def preview_audio(req: PreviewRequest):
             "speed": req.speed
         }
         
-        audio_array = preview_engine.synthesize_segment(segment)
+        audio_array = await asyncio.to_thread(preview_engine.synthesize_segment, segment)
         if len(audio_array) == 0:
             raise HTTPException(status_code=500, detail="Không thể tạo âm thanh")
             
@@ -45,6 +46,8 @@ async def preview_audio(req: PreviewRequest):
         buffer.seek(0)
         
         return StreamingResponse(buffer, media_type="audio/wav")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -55,7 +58,7 @@ async def preview_chapter(req: ChapterPreviewRequest):
         if not os.path.exists(epub_path):
             raise HTTPException(status_code=404, detail="File sách không tồn tại")
             
-        parser = EPUBParser(epub_path)
+        parser = await asyncio.to_thread(EPUBParser, epub_path)
         chapters = parser.get_chapters()
         if not chapters:
             raise HTTPException(status_code=400, detail="Sách không có chương nào")
@@ -89,7 +92,7 @@ async def preview_chapter(req: ChapterPreviewRequest):
         preview_engine.narrator_voice = req.narrator_voice
         preview_engine.dialogue_voice = req.dialogue_voice if req.dialogue_voice else req.narrator_voice
         
-        audio_array = preview_engine.synthesize_chapter(final_segments, gap_seconds=0.4)
+        audio_array = await asyncio.to_thread(preview_engine.synthesize_chapter, final_segments, 0.4)
         if len(audio_array) == 0:
             raise HTTPException(status_code=500, detail="Không thể tạo âm thanh")
             
@@ -101,5 +104,7 @@ async def preview_chapter(req: ChapterPreviewRequest):
         buffer.seek(0)
         
         return StreamingResponse(buffer, media_type="audio/wav")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
