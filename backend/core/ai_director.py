@@ -5,8 +5,12 @@
 - Chuẩn hóa: voice ∈ {narrator, male, female} (mập mờ -> male), kẹp speed/pause.
 - AI trả về MỖI DÒNG MỘT SEGMENT dạng `VAI|tốc độ|nghỉ|nội dung` (không dùng JSON vì
   dấu ngoặc kép trong lời thoại hay làm JSON vỡ). Vẫn đọc được JSON nếu AI lỡ trả JSON.
-- Kiểm tra độ trung thành: AI không được bỏ/viết lại nội dung. Hỏng -> thử lại (tối đa 3 lần)
-  -> vẫn hỏng thì dùng tách vai theo ngoặc kép (split_roles) cho khúc đó, đánh dấu fallback.
+- Gemini web đôi khi "tua lại" giữa chừng: một dòng bị cắt dở, dính liền mã `X|tốc độ|nghỉ|` của dòng
+  mới, rồi phát lại vài dòng trước đó -> audio đọc lặp câu. Xử lý: tách dòng dính (parse_lines) và
+  bỏ segment xuất hiện nhiều lần hơn trong văn bản gốc (drop_repeats).
+- Kiểm tra độ trung thành: AI không được bỏ/viết lại/lặp nội dung (tỉ lệ khớp + số ký tự thêm/bớt).
+  Hỏng -> thử lại (tối đa 3 lần) -> chia đôi khúc -> vẫn hỏng thì dùng tách vai theo ngoặc kép
+  (split_roles) cho khúc đó, đánh dấu fallback.
 """
 import json
 import re
@@ -27,6 +31,8 @@ SPEED_MIN, SPEED_MAX = 0.8, 1.3
 PAUSE_MIN, PAUSE_MAX = 0.1, 2.0
 DEFAULT_PAUSE = 0.4
 FIDELITY_THRESHOLD = 0.95
+MAX_EXTRA_CHARS = 20    # ký tự (đã bỏ dấu/khoảng trắng) AI thêm vào so với bản gốc -> coi là lặp/bịa
+MAX_MISSING_CHARS = 30  # ký tự AI làm rơi mất
 CHUNK_CHARS = 2500
 CONTEXT_PARAS = 2
 
@@ -94,6 +100,8 @@ def _clamp(v, lo, hi, default):
 _LINE_RE = re.compile(
     r"^\s*[-*\d.)\s]*\[?(n|m|f|narrator|male|female)\]?\s*\|\s*([\d.,]*)\s*\|\s*([\d.,]*)\s*\|(.*)$",
     re.I)
+# Mã segment bị dính vào giữa dòng khác, ví dụ "...dáng ngườiM|0.9|0.4|Tư chất..."
+_GLUED_RE = re.compile(r"(?<=\S)(?=[NMF]\|\d+(?:[.,]\d+)?\|\d+(?:[.,]\d+)?\|)")
 
 
 def _num(v: str):
@@ -114,14 +122,24 @@ def _make_seg(voice: str, text, speed, pause) -> Optional[dict]:
 
 
 def parse_lines(raw: str) -> list[dict]:
-    out = []
+    out, cut = [], []
     for line in raw.replace("```", "\n").splitlines():
-        m = _LINE_RE.match(line)
-        if m:
-            seg = _make_seg(m.group(1), m.group(4), _num(m.group(2)), _num(m.group(3)))
-            if seg:
-                out.append(seg)
-    return out
+        pieces = _GLUED_RE.split(line)
+        for k, piece in enumerate(pieces):
+            m = _LINE_RE.match(piece)
+            if m:
+                seg = _make_seg(m.group(1), m.group(4), _num(m.group(2)), _num(m.group(3)))
+                if seg:
+                    out.append(seg)
+                    cut.append(k < len(pieces) - 1)  # bị mã dòng sau dính vào -> có thể bị cắt dở
+    return drop_cut_heads(out, cut)
+
+
+def drop_cut_heads(segs: list[dict], cut: list[bool]) -> list[dict]:
+    """Bỏ mảnh bị cắt dở nếu phía sau có dòng đầy đủ bắt đầu bằng đúng mảnh đó."""
+    norms = [_norm_for_compare(s["text"]) for s in segs]
+    return [s for i, s in enumerate(segs)
+            if not (cut[i] and any(n.startswith(norms[i]) for n in norms[i + 1:]))]
 
 
 def parse_and_normalize(raw: str) -> list[dict]:
@@ -158,6 +176,49 @@ def fidelity(original: str, segments: list[dict]) -> float:
     if not a:
         return 1.0
     return SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
+def diff_chars(original: str, segments: list[dict]) -> tuple[int, int]:
+    """(số ký tự AI thêm vào, số ký tự AI bỏ mất), không tính dấu câu/khoảng trắng.
+
+    Tỉ lệ khớp tổng thể không đủ: lặp 1 câu 150 ký tự trong khúc 2.500 ký tự vẫn đạt ~0.97.
+    """
+    a = _norm_for_compare(original)
+    b = _norm_for_compare("".join(seg["text"] for seg in segments))
+    extra = missing = 0
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag in ("insert", "replace"):
+            extra += j2 - j1
+        if tag in ("delete", "replace"):
+            missing += i2 - i1
+    return extra, missing
+
+
+def drop_repeats(original: str, segments: list[dict], context: str = "") -> list[dict]:
+    """Bỏ segment mà AI lặp lại hoặc chép từ phần ngữ cảnh.
+
+    Duyệt từ cuối lên, giữ một segment khi số lần nội dung của nó xuất hiện trong phần đã giữ không
+    vượt số lần trong văn bản gốc. Duyệt ngược để giữ bản ĐẦY ĐỦ của dòng bị cắt dở (bản đầy đủ luôn
+    đứng sau mảnh cắt). Segment không có trong bản gốc (AI sửa chữ) được giữ lại để bước kiểm tra
+    độ trung thành quyết định.
+    """
+    a = _norm_for_compare(original)
+    ctx = _norm_for_compare(context)
+    kept, acc, nxt = [], "", None
+    for seg in reversed(segments):
+        t = _norm_for_compare(seg["text"])
+        if t:
+            n_orig = a.count(t)
+            if n_orig == 0 and ctx and t in ctx:
+                continue  # chép lại ngữ cảnh khúc trước
+            if 0 < n_orig < (t + acc).count(t):
+                continue  # lặp
+            if t == nxt and t + t not in a:
+                continue  # 2 đoạn liền nhau giống hệt (câu ngắn như "Ôi..." lọt qua phép đếm)
+        kept.append(seg)
+        acc, nxt = t + acc, t
+    kept.reverse()
+    return kept
 
 
 def fallback_segments(paragraphs: list[str]) -> list[dict]:
@@ -203,10 +264,16 @@ class AIDirector:
                 head = re.sub(r"\s+", " ", (raw or "")[:200])
                 self.log(f"  Phản hồi không đọc được (lần {attempt + 1}): {e} | Đầu phản hồi: {head!r}")
                 continue
+            cleaned = drop_repeats(original, segs, "\n".join(context))
+            if len(cleaned) < len(segs):
+                self.log(f"  Bỏ {len(segs) - len(cleaned)} đoạn AI lặp lại (lần {attempt + 1})")
+            segs = cleaned
             score = fidelity(original, segs)
-            if score >= FIDELITY_THRESHOLD:
+            extra, missing = diff_chars(original, segs)
+            if score >= FIDELITY_THRESHOLD and extra <= MAX_EXTRA_CHARS and missing <= MAX_MISSING_CHARS:
                 return segs, False
-            self.log(f"  Độ trung thành thấp {score:.2f} (lần {attempt + 1}), thử lại...")
+            self.log(f"  Không khớp bản gốc (lần {attempt + 1}): khớp {score:.2f}, "
+                     f"thừa {extra} ký tự, thiếu {missing} ký tự -> thử lại...")
         if len(chunk) >= 2 and depth < MAX_SPLIT_DEPTH:
             mid = len(chunk) // 2
             self.log(f"  -> Chia đôi khúc ({len(chunk)} đoạn) và thử lại từng nửa...")
