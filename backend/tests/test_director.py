@@ -32,6 +32,25 @@ def test_normalize_raw_newline_in_string():
     assert segs[0]["text"] == "Dòng một Dòng hai"
 
 
+def test_parse_line_format():
+    raw = ('Đây là kết quả:\n```\nN|1.0|0.4|Hắn nói: "đi" rồi quay lưng.\n'
+           'M|1,2|0,2|“Ngươi là ai?”\n'
+           '- F | 0.9 | 0.8 | Ta... chỉ là khách | qua đường.\n'
+           'narrator|||Kết.\ndòng rác\n```')
+    segs = parse_and_normalize(raw)
+    assert [s["voice"] for s in segs] == ["narrator", "male", "female", "narrator"]
+    assert segs[0]["text"] == 'Hắn nói: "đi" rồi quay lưng.'
+    assert segs[1] == {"voice": "male", "text": "Ngươi là ai?", "speed": 1.2, "pause_after": 0.2}
+    assert segs[2]["text"] == "Ta... chỉ là khách | qua đường."
+    assert segs[3]["speed"] == 1.0 and segs[3]["pause_after"] == 0.4
+
+
+def test_parse_empty_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        parse_and_normalize("")
+
+
 def test_fidelity():
     orig = 'Hắn nói: "Đi thôi." Rồi quay lưng.'
     good = [{"text": "Hắn nói:"}, {"text": "Đi thôi..."}, {"text": "Rồi, quay lưng."}]
@@ -52,12 +71,32 @@ class FakePool:
 
 def test_direct_chunk_retry_then_fallback():
     chunk = ['Hắn nói: "Đi thôi."']
-    pool = FakePool(['[{"text":"Tóm tắt","voice":"narrator"}]', 'không phải json'])
+    pool = FakePool(['[{"text":"Tóm tắt","voice":"narrator"}]', 'không phải json', ''])
     d = AIDirector(pool=pool, log=lambda m: None)
     segs, fb = asyncio.run(d.direct_chunk(chunk, []))
-    assert fb is True and len(pool.prompts) == 2
+    assert fb is True and len(pool.prompts) == 3
     assert [s["voice"] for s in segs] == ["narrator", "male"]
     assert all(s["fallback"] for s in segs)
+
+
+def test_direct_chunk_recovers_on_third_try():
+    chunk = ['Hắn nói: "Đi thôi."']
+    pool = FakePool(['', '[{"text": "Hắn nói: "Đi thôi.""}]', 'N|1.0|0.3|Hắn nói:\nM|1.1|0.4|Đi thôi.'])
+    d = AIDirector(pool=pool, log=lambda m: None)
+    segs, fb = asyncio.run(d.direct_chunk(chunk, []))
+    assert fb is False and [s["voice"] for s in segs] == ["narrator", "male"]
+
+
+def test_direct_chunk_splits_and_isolates_failure():
+    chunk = ["Đoạn một yên bình.", "Đoạn hai máu me."]
+    pool = FakePool(["Tôi không được lập trình để làm điều đó."] * 3   # cả khúc: hỏng 3 lần
+                    + ["N|1.0|0.4|Đoạn một yên bình."]                # nửa đầu: OK
+                    + ["Tôi không thể giúp."] * 2)                     # nửa sau: hỏng 2 lần
+    d = AIDirector(pool=pool, log=lambda m: None)
+    segs, fb = asyncio.run(d.direct_chunk(chunk, []))
+    assert fb is True and len(pool.prompts) == 6
+    assert segs[0]["text"] == "Đoạn một yên bình." and "fallback" not in segs[0]
+    assert segs[1]["text"] == "Đoạn hai máu me." and segs[1]["fallback"] is True
 
 
 def test_direct_chapter_passes_context():

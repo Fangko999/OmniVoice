@@ -65,7 +65,9 @@ class DirectorJob(JobBase):
         manifest = script_store.load_manifest(cfg.script_dir)
         on_disk = set(script_store.done_chapters(cfg.script_dir))
         edited = {int(k) for k, v in manifest.chapters.items() if v.edited}
-        skip = (edited & on_disk) if cfg.overwrite else on_disk
+        # Chương còn khúc fallback (chưa sửa tay) -> cho AI làm lại khi chạy lại
+        has_fallback = {int(k) for k, v in manifest.chapters.items() if v.fallback_chunks and not v.edited}
+        skip = (edited & on_disk) if cfg.overwrite else (on_disk - has_fallback)
         self.state.completed_chapters = sorted(skip)
         self.save_state()
 
