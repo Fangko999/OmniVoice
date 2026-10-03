@@ -71,8 +71,8 @@ if not exist "%BACKEND%\accounts.json" (
         copy /y "%BACKEND%\accounts.example.json" "%BACKEND%\accounts.json" >nul
     )
     echo [CANH BAO] Chua co backend\accounts.json - da tao tu file mau.
-    echo            Tab "AI Dao dien" can cookie that ^(__Secure-1PSID, __Secure-1PSIDTS^).
-    echo            Tab "Doc nhanh" va "Thu am kich ban" van dung binh thuong.
+    echo            Tab "AI Dao dien" can API Key hoac cookie Gemini.
+    echo            Vao backend\accounts.json de dien API Key hoac cookie truoc khi dung.
     echo.
 )
 

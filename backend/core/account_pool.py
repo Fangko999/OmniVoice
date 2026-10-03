@@ -80,20 +80,28 @@ def _cookie_value(cookies, name: str) -> Optional[str]:
 
 
 def _is_unauthenticated(client) -> bool:
+    if type(client).__name__ == "CustomAPIClientWrapper":
+        return False
     st = getattr(client, "account_status", None)
     return getattr(st, "name", str(st)) == "UNAUTHENTICATED"
 
 
 def _cookie_sig(acc) -> str:
     """Dấu vân tay của cặp cookie (không lưu cookie thật vào file usage)."""
+    if getattr(acc, "api_type", "gemini_web") == "openai":
+        return hashlib.sha1(f"{acc.api_key}|{acc.base_url}".encode()).hexdigest()[:12]
     return hashlib.sha1(f"{acc.secure_1psid}|{acc.secure_1psidts}".encode()).hexdigest()[:12]
 
 
 @dataclass
 class Account:
     name: str
-    secure_1psid: str
-    secure_1psidts: str
+    secure_1psid: str = ""
+    secure_1psidts: str = ""
+    api_type: str = "gemini_web"  # gemini_web | openai
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
     enabled: bool = True
     daily_limit: Optional[int] = None
     proxy: Optional[str] = None
@@ -142,7 +150,41 @@ class Account:
         }
 
 
+class CustomAPIClientWrapper:
+    def __init__(self, api_key: str, base_url: str, model: str):
+        self.api_key = api_key
+        self.base_url = base_url
+        self.model = model
+        self.account_status = "OK"  # Giả lập để vượt qua check authentication
+
+    async def init(self, **kwargs):
+        # Không cần init session như Gemini web
+        pass
+
+    async def generate_content(self, prompt: str, **kwargs):
+        import httpx
+        class Resp:
+            def __init__(self, t): self.text = t
+            
+        url = self.base_url.rstrip("/") + "/chat/completions"
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        # Tự động ghi đè model của AI Director bằng model của riêng API key này (vì Claude/DeepSeek gọi tên khác nhau)
+        model = self.model or kwargs.get("model") or "gpt-4o-mini"
+        data = {"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 4000}
+        
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(url, headers=headers, json=data)
+            # Quăng lỗi httpx.HTTPStatusError nếu bị 401/403/429
+            if resp.status_code == 401 or resp.status_code == 403:
+                raise AuthError(f"HTTP {resp.status_code}: {resp.text}")
+            resp.raise_for_status()
+            js = resp.json()
+            return Resp(js["choices"][0]["message"]["content"])
+
+
 def _default_client_factory(acc: Account):
+    if acc.api_type == "openai":
+        return CustomAPIClientWrapper(acc.api_key, acc.base_url, acc.model)
     from gemini_webapi import GeminiClient
     return GeminiClient(acc.secure_1psid, acc.secure_1psidts, proxy=acc.proxy)
 
@@ -190,8 +232,12 @@ class AccountPool:
             name = raw.get("name") or f"acc{i + 1}"
             acc = Account(
                 name=name,
-                secure_1psid=raw["secure_1psid"],
+                secure_1psid=raw.get("secure_1psid", ""),
                 secure_1psidts=raw.get("secure_1psidts", ""),
+                api_type=raw.get("api_type", "gemini_web" if "secure_1psid" in raw else "openai"),
+                api_key=raw.get("api_key", ""),
+                base_url=raw.get("base_url", ""),
+                model=raw.get("model", ""),
                 enabled=raw.get("enabled", True),
                 daily_limit=raw.get("daily_limit"),
                 proxy=raw.get("proxy"),

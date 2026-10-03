@@ -7,20 +7,19 @@
   },
   "accounts": [
     {
-      "name": "acc1",
-      "secure_1psid": "DÁN __Secure-1PSID CỦA TÀI KHOẢN 1",
-      "secure_1psidts": "DÁN __Secure-1PSIDTS CỦA TÀI KHOẢN 1",
-      "enabled": true,
-      "daily_limit": null,
-      "proxy": null
+      "name": "Claude_GiaRe_API",
+      "api_type": "openai",
+      "api_key": "sk-...",
+      "base_url": "https://api.miraiapi.com/v1",
+      "model": "claude-sonnet-5.5",
+      "enabled": false
     },
     {
-      "name": "acc2",
-      "secure_1psid": "DÁN __Secure-1PSID CỦA TÀI KHOẢN 2",
-      "secure_1psidts": "DÁN __Secure-1PSIDTS CỦA TÀI KHOẢN 2",
-      "enabled": true,
-      "daily_limit": null,
-      "proxy": null
+      "name": "Gemini_Free_Web",
+      "api_type": "gemini_web",
+      "secure_1psid": "dán_cookie_vao_day",
+      "secure_1psidts": "dán_cookie_vao_day",
+      "enabled": false
     }
   ]
 }
