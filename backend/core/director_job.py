@@ -4,7 +4,7 @@ from datetime import datetime
 
 from models.schemas import ChapterScript, DirectorState, ScriptSegment
 from core import script_store
-from core.account_pool import AllAccountsExhausted, PoolStopped, get_pool
+from core.account_pool import AllAccountsExhausted, PoolFailed, PoolStopped, get_pool
 from core.ai_director import AIDirector
 from core.batch_processor import estimate_avg_chars, resolve_book_name
 from core.epub_parser import EPUBParser
@@ -100,6 +100,8 @@ class DirectorJob(JobBase):
                 paragraphs, should_stop=lambda: self._stop_flag, on_progress=progress)
         except AllAccountsExhausted as e:
             raise JobStopped(str(e))
+        except PoolFailed as e:
+            raise JobStopped(f"{e}. Kiểm tra mạng/tài khoản rồi bấm 'Tiếp tục chạy'.")
         except PoolStopped:
             raise JobStopped("Người dùng đã dừng")
 

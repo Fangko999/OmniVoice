@@ -26,3 +26,14 @@ async def reload_accounts():
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"accounts.json lỗi: {e}")
     return get_pool().status()
+
+
+@router.post("/check")
+async def check_accounts():
+    """Đọc lại accounts.json rồi đăng nhập thử từng tài khoản (không tốn hạn mức)."""
+    try:
+        return await get_pool().check_all()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"accounts.json lỗi: {e}")

@@ -160,11 +160,14 @@ WebSocket: `/api/{batch|director|render}/{id}/ws` gửi state JSON đầy đủ 
 - Round-robin **từng request**, giãn cách ngẫu nhiên 1–2.5 s giữa các request (toàn pool).
 - `UsageLimitExceededError` → `exhausted` tới `quota_reset` (+30 s) nếu biết, không thì 6 giờ.
 - Hạn mức đọc từ thuộc tính nội bộ `client._quotas` của gemini_webapi (`action_id == 11` = Gemini Flash), làm mới mỗi 10 request; `remaining <= 0` → bỏ qua tài khoản. Con số này có thể lệch với % hiển thị trên web.
-- `AuthError` → `auth_failed` tới khi cookie trong accounts.json đổi (tự nhận khi reload).
+- `AuthError` → `auth_failed` tới khi cookie trong accounts.json đổi (kể cả chỉ đổi `__Secure-1PSIDTS`; so bằng `cookie_sig` trong accounts_usage.json).
+- **Cookie hết hạn:** gemini_webapi vẫn `init()` "thành công" nhưng `client.account_status == UNAUTHENTICATED` → pool kiểm tra ngay sau init và loại tài khoản (`auth_failed`), không tốn lượt hỏi. Lỗi `UNAUTHENTICATED` khi đang chạy → đăng nhập lại 1 lần, lần 2 liên tiếp → `auth_failed`. Tất cả `auth_failed` → job tạm dừng với hướng dẫn lấy cookie mới.
+- `__Secure-1PSIDTS` do thư viện tự xoay vòng được **ghi ngược vào accounts.json** sau mỗi request thành công (thư viện cũng cache ở `%TEMP%\gemini_webapi\.cached_cookies_<psid>.json`, cache bị xóa khi phiên UNAUTHENTICATED).
+- Nút **"Tải lại & kiểm tra"** (`POST /api/accounts/check`): đọc lại accounts.json và đăng nhập thử từng tài khoản (không tốn hạn mức).
 - Lỗi chứa `UNAUTHENTICATED` → đóng client để lần sau đăng nhập lại từ cookie (thường do `__Secure-1PSIDTS` bị trình duyệt xoay vòng).
 - Lỗi khác 3 lần liên tiếp → `cooldown` 10 phút. `TemporarilyBlockedError` (429 chặn IP) → **cả pool** nghỉ 5/10/15 phút.
-- Không còn tài khoản nào và không ai sắp hồi → `AllAccountsExhausted` → job `paused` kèm lý do. `daily_limit` (tùy chọn) → hết lượt tới ngày mới.
-- `pool.load()` đọc lại accounts.json mỗi lần Start job AI; UI có nút reload (`POST /api/accounts/reload`).
+- Không còn tài khoản nào và không ai sắp hồi → `AllAccountsExhausted` → job `paused` kèm lý do. Thử quá số lần (lỗi mạng...) → `PoolFailed` → cũng `paused`. `daily_limit` (tùy chọn) → hết lượt tới ngày mới.
+- `pool.load()` đọc lại accounts.json mỗi lần Start job AI.
 
 ---
 
@@ -249,7 +252,8 @@ Copy **cả thư mục `OmniVoice`** (gồm cả các thư mục bị gitignore 
 - Chạy script Python in tiếng Việt trên console Windows: đặt `$env:PYTHONIOENCODING='utf-8'`.
 - EPUB "Cổ Chân Nhân" **tự nó có 6 cặp chương trùng nội dung** (1566/1567, 1629/1630, 1658/1659, 1823/1824, 2598/2599, 3048/3049) – không phải lỗi code.
 - EPUB có thể chứa số chú thích dính vào chữ; AI hay bỏ các số đó → "thiếu vài ký tự" là bình thường (giới hạn 30).
-- Gemini web: cookie `__Secure-1PSIDTS` bị xoay khi mở cùng tài khoản trên trình duyệt → lỗi UNAUTHENTICATED; pool tự đăng nhập lại, nếu vẫn lỗi thì lấy cookie mới và bấm reload tài khoản.
+- Gemini web: cookie `__Secure-1PSIDTS` bị xoay khi mở cùng tài khoản trên trình duyệt → lỗi UNAUTHENTICATED; pool tự đăng nhập lại, nếu vẫn lỗi thì lấy cookie mới và bấm "Tải lại & kiểm tra".
+- **Cookie lấy từ Chrome/Edge chỉ sống vài giờ** (Device Bound Session Credentials, không gia hạn được) – ngày 03/10/2026 cả 6 tài khoản chết cùng lúc sau ~2–3 giờ vì lý do này. Nên lấy cookie bằng **Firefox, cửa sổ riêng tư**: đăng nhập gemini.google.com → F12 → Storage → Cookies → copy `__Secure-1PSID`, `__Secure-1PSIDTS` → đóng cửa sổ (không bấm Đăng xuất). Không dùng tài khoản đó trên trình duyệt khác trong lúc chạy.
 - `gemini_webapi` (bản 2.1.1) là thư viện không chính thức: thuộc tính `_quotas`, `_fetch_quota` là nội bộ, có thể đổi khi nâng cấp.
 - Mọi đường dẫn tương đối (`uploads/`, `state/`, `outputs/`, `accounts.json`) tính từ **cwd = backend/**. Chạy uvicorn ở thư mục khác sẽ tạo dữ liệu sai chỗ.
 - Thư viện có `print` tiếng Việt; log job ghi file UTF-8 trong `<thư mục lưu>/logs/`.

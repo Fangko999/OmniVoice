@@ -17,6 +17,7 @@ File cấu hình `accounts.json` (đặt trong thư mục backend):
 }
 """
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -49,8 +50,43 @@ class AllAccountsExhausted(Exception):
     pass
 
 
+class PoolFailed(RuntimeError):
+    """Gọi Gemini thất bại quá nhiều lần liên tiếp (mạng, lỗi server...) -> job nên tạm dừng."""
+
+
 class PoolStopped(Exception):
     pass
+
+
+ALL_AUTH_FAILED_MSG = (
+    "Cookie của TẤT CẢ tài khoản Gemini đã hết hạn/bị đăng xuất. Lấy cookie mới (nên dùng Firefox, "
+    "cửa sổ riêng tư - cookie Chrome/Edge chỉ sống vài giờ), dán vào backend/accounts.json, "
+    "bấm 'Tải lại & kiểm tra' (khung Tài khoản Gemini) rồi 'Tiếp tục chạy'."
+)
+
+
+def _cookie_value(cookies, name: str) -> Optional[str]:
+    """Đọc giá trị cookie từ jar của curl_cffi (ưu tiên domain .google.com)."""
+    found = None
+    try:
+        for c in cookies.jar:
+            if c.name == name and c.value:
+                if c.domain in (".google.com", "google.com"):
+                    return c.value
+                found = found or c.value
+    except Exception:
+        return None
+    return found
+
+
+def _is_unauthenticated(client) -> bool:
+    st = getattr(client, "account_status", None)
+    return getattr(st, "name", str(st)) == "UNAUTHENTICATED"
+
+
+def _cookie_sig(acc) -> str:
+    """Dấu vân tay của cặp cookie (không lưu cookie thật vào file usage)."""
+    return hashlib.sha1(f"{acc.secure_1psid}|{acc.secure_1psidts}".encode()).hexdigest()[:12]
 
 
 @dataclass
@@ -164,10 +200,10 @@ class AccountPool:
             u = usage.get(name, {})
             acc.day = u.get("day", "")
             acc.requests_today = u.get("requests_today", 0)
-            # Cookie có thể đã được cập nhật -> bỏ trạng thái auth_failed
-            cookie_changed = prev is not None and prev.secure_1psid != acc.secure_1psid
+            # Cookie có thể đã được cập nhật (kể cả chỉ __Secure-1PSIDTS) -> bỏ trạng thái auth_failed
+            cookie_changed = prev is not None and _cookie_sig(prev) != _cookie_sig(acc)
             status = u.get("status", "active")
-            if status == "auth_failed" and (cookie_changed or prev is None and u.get("psid_tail") != acc.secure_1psid[-8:]):
+            if status == "auth_failed" and (cookie_changed or prev is None and u.get("cookie_sig") != _cookie_sig(acc)):
                 status = "active"
             acc.status = status
             acc.until = u.get("until")
@@ -200,6 +236,7 @@ class AccountPool:
                 "until": a.until,
                 "last_error": a.last_error,
                 "psid_tail": a.secure_1psid[-8:],
+                "cookie_sig": _cookie_sig(a),
             }
             for a in self.accounts
         }
@@ -265,9 +302,48 @@ class AccountPool:
         if acc.client is None:
             client = self.client_factory(acc)
             await client.init(timeout=self.settings["init_timeout"], auto_close=False, auto_refresh=True)
+            if _is_unauthenticated(client):
+                # gemini_webapi vẫn init "thành công" với cookie hết hạn (như khách chưa đăng nhập)
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+                raise AuthError("phiên không đăng nhập được (UNAUTHENTICATED) - cookie đã hết hạn")
             acc.client = client
             self._read_quota(acc)
         return acc.client
+
+    def _persist_cookies(self, acc: Account):
+        """Ghi __Secure-1PSIDTS mới (thư viện tự xoay vòng) ngược vào accounts.json.
+
+        Không ghi thì lần khởi động sau phải dùng cookie cũ trong file (hoặc cache trong thư mục Temp,
+        có thể bị xóa) -> dễ bị UNAUTHENTICATED.
+        """
+        cookies = getattr(acc.client, "cookies", None)
+        if cookies is None:
+            return
+        new_ts = _cookie_value(cookies, "__Secure-1PSIDTS")
+        if not new_ts or new_ts == acc.secure_1psidts:
+            return
+        if _cookie_value(cookies, "__Secure-1PSID") not in (None, acc.secure_1psid):
+            return
+        try:
+            with open(self.accounts_path, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+            items = data if isinstance(data, list) else data.get("accounts", [])
+            changed = False
+            for raw in items:
+                if raw.get("secure_1psid") == acc.secure_1psid:
+                    raw["secure_1psidts"] = new_ts
+                    changed = True
+            if changed:
+                tmp = self.accounts_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self.accounts_path)
+            acc.secure_1psidts = new_ts
+        except Exception as e:
+            self._emit(f"[{acc.name}] không lưu được cookie mới vào accounts.json: {e}")
 
     def _read_quota(self, acc: Account):
         """Đọc hạn mức Gemini Flash mà gemini_webapi đã lấy (thuộc tính nội bộ, có thể không có)."""
@@ -330,6 +406,8 @@ class AccountPool:
                     recovery = self._earliest_recovery()
                     self._save_usage()
                     if recovery is None:
+                        if all(a.status in ("auth_failed", "disabled") for a in self.accounts):
+                            raise AllAccountsExhausted(ALL_AUTH_FAILED_MSG)
                         raise AllAccountsExhausted(
                             "Toàn bộ tài khoản Gemini đã hết hạn mức hoặc cookie hết hạn. "
                             "Hãy chạy lại sau hoặc cập nhật accounts.json."
@@ -372,6 +450,7 @@ class AccountPool:
                     acc.status = "exhausted"
                     acc.until = None  # hồi lại khi sang ngày mới
                     self._emit(f"[{acc.name}] đã dùng hết {acc.daily_limit} request/ngày, chuyển tài khoản.")
+                self._persist_cookies(acc)
                 self._save_usage()
                 return text
 
@@ -386,8 +465,10 @@ class AccountPool:
                 acc.until = None
                 acc.last_error = f"Cookie lỗi/hết hạn: {e}"
                 await self._close_client(acc)
-                self._emit(f"[{acc.name}] cookie hết hạn, bỏ qua tài khoản này.")
+                self._emit(f"[{acc.name}] cookie hết hạn, bỏ qua tài khoản này (cần lấy cookie mới).")
                 last_exc = e
+                self._save_usage()
+                continue  # không tính vào số lần thử: tài khoản đã bị loại khỏi vòng
             except TemporarilyBlockedError as e:
                 steps = self.settings["ip_block_minutes"]
                 minutes = steps[min(self._block_level, len(steps) - 1)]
@@ -403,9 +484,18 @@ class AccountPool:
                 acc.last_error = f"{type(e).__name__}: {e}"
                 if "UNAUTHENTICATED" in str(e).upper():
                     # Phiên hỏng (thường do cookie __Secure-1PSIDTS bị xoay ở trình duyệt/tiến trình khác).
-                    # Đóng client để lần tới đăng nhập lại từ cookie trong accounts.json.
+                    # Đóng client để lượt sau đăng nhập lại từ accounts.json; nếu vẫn không đăng nhập được thì
+                    # _get_client ném AuthError -> auth_failed (không lặp 3 lần rồi nghỉ 10 phút như lỗi thường).
                     await self._close_client(acc)
-                    self._emit(f"[{acc.name}] phiên đăng nhập mất hiệu lực, sẽ đăng nhập lại.")
+                    last_exc = e
+                    if acc.consecutive_errors >= 2:
+                        acc.status = "auth_failed"
+                        acc.until = None
+                        self._emit(f"[{acc.name}] đăng nhập lại vẫn bị UNAUTHENTICATED, bỏ qua tài khoản (cần cookie mới).")
+                    else:
+                        self._emit(f"[{acc.name}] phiên đăng nhập mất hiệu lực, sẽ đăng nhập lại.")
+                    self._save_usage()
+                    continue
                 if acc.consecutive_errors >= self.settings["max_consecutive_errors"]:
                     acc.status = "cooldown"
                     acc.until = self.clock() + self.settings["cooldown_minutes"] * 60
@@ -416,11 +506,31 @@ class AccountPool:
             self._save_usage()
             attempts += 1
             if attempts >= limit:
-                raise RuntimeError(f"Gọi Gemini thất bại sau {attempts} lần thử: {last_exc}")
+                raise PoolFailed(f"Gọi Gemini thất bại sau {attempts} lần thử: {last_exc}")
 
     async def close(self):
         for a in self.accounts:
             await self._close_client(a)
+
+    async def check_all(self) -> dict:
+        """Đăng nhập thử từng tài khoản đang bật (không gửi câu hỏi nào -> không tốn hạn mức)."""
+        self.load()
+        for acc in self.accounts:
+            if not acc.enabled or acc.status == "exhausted":
+                continue
+            if acc.client is not None and not _is_unauthenticated(acc.client):
+                continue  # đang dùng tốt
+            await self._close_client(acc)
+            try:
+                await self._get_client(acc)
+                acc.status, acc.until, acc.last_error, acc.consecutive_errors = "active", None, None, 0
+            except AuthError as e:
+                acc.status, acc.until = "auth_failed", None
+                acc.last_error = f"Cookie lỗi/hết hạn: {e}"
+            except Exception as e:
+                acc.last_error = f"Không kiểm tra được: {type(e).__name__}: {e}"
+        self._save_usage()
+        return self.status()
 
 
 _pool: Optional[AccountPool] = None

@@ -35,7 +35,7 @@ export default function AccountPoolStatus({ pollMs = 10000, compact = false }) {
   const reload = async () => {
     setLoading(true);
     try {
-      const r = await axios.post(`${API_BASE}/accounts/reload`);
+      const r = await axios.post(`${API_BASE}/accounts/check`);
       setData(r.data);
     } catch (e) {
       alert(errMsg(e));
@@ -54,8 +54,8 @@ export default function AccountPoolStatus({ pollMs = 10000, compact = false }) {
           <KeyRound size={16} /> Tài khoản Gemini
           <span className={`pool-count ${usable === 0 ? 'empty' : ''}`}>{usable}/{accounts.length} sẵn sàng</span>
         </span>
-        <button id="reload-accounts-btn" className="btn btn-sm" onClick={reload} disabled={loading} title="Đọc lại accounts.json">
-          <RefreshCw size={14} className={loading ? 'animate-spin-slow' : ''} /> Tải lại
+        <button id="reload-accounts-btn" className="btn btn-sm" onClick={reload} disabled={loading} title="Đọc lại accounts.json và đăng nhập thử từng tài khoản (không tốn hạn mức)">
+          <RefreshCw size={14} className={loading ? 'animate-spin-slow' : ''} /> {loading ? 'Đang kiểm tra...' : 'Tải lại & kiểm tra'}
         </button>
       </div>
 

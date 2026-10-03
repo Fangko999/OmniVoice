@@ -157,3 +157,86 @@ def test_zero_quota_skipped_and_recovers_at_reset(tmp_path):
     run(pool.generate("x"))
     run(pool.generate("x"))
     assert "acc1" in calls
+
+
+class _Status:
+    def __init__(self, name):
+        self.name = name
+
+
+def test_unauthenticated_at_init_fails_fast(tmp_path):
+    """Cookie hết hạn: gemini_webapi init vẫn 'thành công' nhưng account_status=UNAUTHENTICATED."""
+    pool, calls, _ = make_pool(tmp_path, 3, {})
+    orig = pool.client_factory
+
+    def factory(acc):
+        c = orig(acc)
+        if acc.name != "acc3":
+            c.account_status = _Status("UNAUTHENTICATED")
+        return c
+
+    pool.client_factory = factory
+    assert run(pool.generate("x")).startswith("acc3")
+    st = {a["name"]: a["status"] for a in pool.status()["accounts"]}
+    assert st == {"acc1": "auth_failed", "acc2": "auth_failed", "acc3": "active"}
+
+
+def test_all_unauthenticated_message(tmp_path):
+    pool, calls, _ = make_pool(tmp_path, 2, {})
+    orig = pool.client_factory
+
+    def factory(acc):
+        c = orig(acc)
+        c.account_status = _Status("UNAUTHENTICATED")
+        return c
+
+    pool.client_factory = factory
+    with pytest.raises(AllAccountsExhausted, match="Cookie của TẤT CẢ"):
+        run(pool.generate("x"))
+    assert calls == []  # không gửi câu hỏi nào
+
+
+def test_repeated_unauthenticated_generate_is_bounded(tmp_path):
+    err = RuntimeError("gemini-flash is not available for use. Account status: UNAUTHENTICATED")
+    pool, calls, _ = make_pool(tmp_path, 1, {"acc1": [err] * 10})
+    with pytest.raises(AllAccountsExhausted):
+        run(pool.generate("x"))
+    assert len(calls) == 2  # đăng nhập lại 1 lần, vẫn lỗi -> auth_failed
+    assert pool.status()["accounts"][0]["status"] == "auth_failed"
+
+
+def test_rotated_cookie_persisted(tmp_path):
+    pool, _, _ = make_pool(tmp_path, 1, {})
+    orig = pool.client_factory
+
+    class _C:
+        def __init__(self, name, value, domain=".google.com"):
+            self.name, self.value, self.domain = name, value, domain
+
+    class _Jar:
+        jar = [_C("__Secure-1PSID", "psid1xxxxxxxx"), _C("__Secure-1PSIDTS", "rotated-ts")]
+
+    def factory(acc):
+        c = orig(acc)
+        c.cookies = _Jar()
+        return c
+
+    pool.client_factory = factory
+    run(pool.generate("x"))
+    cfg = json.loads((tmp_path / "accounts.json").read_text(encoding="utf-8"))
+    assert cfg["accounts"][0]["secure_1psidts"] == "rotated-ts"
+    assert cfg["settings"]["min_delay"] == 0  # giữ nguyên phần khác
+    pool.load()
+    assert pool.accounts[0].client is not None  # cookie đổi do chính pool -> không đăng nhập lại
+
+
+def test_auth_failed_reset_when_only_psidts_changes(tmp_path):
+    pool, _, _ = make_pool(tmp_path, 1, {"acc1": [AuthError("x")]})
+    with pytest.raises(AllAccountsExhausted):
+        run(pool.generate("x"))
+    cfg = json.loads((tmp_path / "accounts.json").read_text(encoding="utf-8"))
+    cfg["accounts"][0]["secure_1psidts"] = "new-ts"
+    (tmp_path / "accounts.json").write_text(json.dumps(cfg), encoding="utf-8")
+    fresh = AccountPool(str(tmp_path / "accounts.json"), str(tmp_path / "usage.json"))
+    fresh.load()  # như khởi động lại server
+    assert fresh.status()["accounts"][0]["status"] == "active"
