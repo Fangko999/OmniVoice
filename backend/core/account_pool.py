@@ -401,6 +401,11 @@ class AccountPool:
             except Exception as e:
                 acc.consecutive_errors += 1
                 acc.last_error = f"{type(e).__name__}: {e}"
+                if "UNAUTHENTICATED" in str(e).upper():
+                    # Phiên hỏng (thường do cookie __Secure-1PSIDTS bị xoay ở trình duyệt/tiến trình khác).
+                    # Đóng client để lần tới đăng nhập lại từ cookie trong accounts.json.
+                    await self._close_client(acc)
+                    self._emit(f"[{acc.name}] phiên đăng nhập mất hiệu lực, sẽ đăng nhập lại.")
                 if acc.consecutive_errors >= self.settings["max_consecutive_errors"]:
                     acc.status = "cooldown"
                     acc.until = self.clock() + self.settings["cooldown_minutes"] * 60

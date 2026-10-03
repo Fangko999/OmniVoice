@@ -5,7 +5,7 @@ import { API_BASE, errMsg } from '../constants';
 
 const STATUS_LABEL = {
   active: 'Sẵn sàng',
-  cooldown: 'Nghỉ tạm',
+  cooldown: 'Nghỉ tạm do lỗi',
   exhausted: 'Hết hạn mức',
   auth_failed: 'Cookie hỏng',
   disabled: 'Tắt'
